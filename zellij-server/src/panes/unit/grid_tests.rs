@@ -4457,6 +4457,78 @@ fn osc133_backward_scan_finds_command_start_in_deep_scrollback() {
 }
 
 #[test]
+fn last_completed_command_output_raw_returns_last_command_output() {
+    let grid = create_grid_with_content(
+        "\x1b]133;A\x07$ \x1b]133;B\x07echo hi\x1b]133;C\x07\r\nhi\x1b]133;D;0\x07",
+    );
+
+    assert_eq!(
+        grid.last_completed_command_output_raw(),
+        Some("hi".to_owned())
+    );
+}
+
+#[test]
+fn last_completed_command_output_raw_without_markers_is_none() {
+    let grid = create_grid_with_content("$ echo hi\r\nhi");
+
+    assert_eq!(grid.last_completed_command_output_raw(), None);
+}
+
+#[test]
+fn last_completed_command_output_raw_returns_empty_for_silent_command() {
+    // `true`: the most recent completed command produced no output, which should be
+    // reported as an empty string rather than as "no command output found"
+    let grid = create_grid_with_content(
+        "\x1b]133;A\x07$ \x1b]133;B\x07true\x1b]133;C\x07\r\n\x1b]133;D;0\x07",
+    );
+
+    assert_eq!(
+        grid.last_completed_command_output_raw(),
+        Some(String::new())
+    );
+    // ...while the clipboard-oriented method keeps looking for an earlier command with
+    // output and finds none here
+    assert_eq!(grid.last_completed_command_output(), None);
+}
+
+#[test]
+fn last_completed_command_output_raw_targets_most_recent_command() {
+    // an earlier command with output followed by a silent one: the raw variant reports the
+    // (empty) output of the most recent command, the clipboard-oriented variant reports the
+    // earlier non-empty output
+    let grid = create_grid_with_content(
+        "\x1b]133;A\x07$ \x1b]133;B\x07echo first\x1b]133;C\x07\r\nfirst\x1b]133;D;0\x07\
+         \x1b]133;A\x07$ \x1b]133;B\x07true\x1b]133;C\x07\r\n\x1b]133;D;0\x07",
+    );
+
+    assert_eq!(
+        grid.last_completed_command_output_raw(),
+        Some(String::new())
+    );
+    assert_eq!(
+        grid.last_completed_command_output()
+            .map(|(output, _, _)| output),
+        Some("first".to_owned())
+    );
+}
+
+#[test]
+fn last_completed_command_output_raw_skips_running_command() {
+    // the most recent command has no end boundary (still running): the last *completed*
+    // command's output is returned
+    let grid = create_grid_with_content(
+        "\x1b]133;A\x07$ \x1b]133;B\x07echo first\x1b]133;C\x07\r\nfirst\x1b]133;D;0\x07\
+         \x1b]133;A\x07$ \x1b]133;B\x07sleep 10\x1b]133;C\x07\r\n...",
+    );
+
+    assert_eq!(
+        grid.last_completed_command_output_raw(),
+        Some("first".to_owned())
+    );
+}
+
+#[test]
 fn cursor_forward_over_unwritten_line_positions_character() {
     use crate::panes::terminal_character::AnsiCode;
 
@@ -9146,4 +9218,25 @@ fn a_character_wider_than_two_columns_advances_the_cursor_by_its_full_width() {
     assert_eq!(row.columns[0].width(), 3);
     assert_eq!(row.width(), 4);
     assert_eq!(cursor_position(&grid), Some((4, 0)));
+}
+
+#[test]
+fn last_completed_command_output_raw_degenerate_range_is_empty_output() {
+    // 真实 shell 序列: 无输出命令的 C 与其 D 落在同一位置 (退化区间), 且下一轮
+    // prompt 绘制在同一行 — 不得把 prompt 文本当输出, 也不得跳过该命令 (空输出
+    // 是合法输出); 两条无输出命令之后查询, 最近完成命令的输出应为空串
+    let grid = create_grid_with_content(
+        "\x1b]133;D;0\x07\x1b]133;A\x07host% echo AA-line\r\n\x1b]133;C\x07AA-line\r\n\
+         \x1b]133;D;0\x07\x1b]133;A\x07host% true\r\n\x1b]133;C\x07\
+         \x1b]133;D;0\x07\x1b]133;A\x07host% cap f2\r\n\x1b]133;C\x07",
+    );
+    assert_eq!(
+        grid.last_completed_command_output_raw(),
+        Some(String::new())
+    );
+    // 对照: 内置 (剪贴板导向) 方法跳过空输出, 返回更早的非空输出
+    assert_eq!(
+        grid.last_completed_command_output().map(|(o, _, _)| o),
+        Some("AA-line".to_owned())
+    );
 }

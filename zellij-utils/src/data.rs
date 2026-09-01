@@ -2647,6 +2647,12 @@ pub enum GetPaneCwdResponse {
     Err(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LastCommandOutputResponse {
+    Ok(String),
+    Err(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GetFocusedPaneInfoResponse {
     Ok { tab_index: usize, pane_id: PaneId },
@@ -3503,6 +3509,9 @@ pub enum PluginCommand {
         pane_id: PaneId,
     },
     GetPaneCwd {
+        pane_id: PaneId,
+    },
+    GetLastCommandOutput {
         pane_id: PaneId,
     },
     MovePaneWithPaneId(PaneId),

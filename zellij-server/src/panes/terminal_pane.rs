@@ -752,6 +752,9 @@ impl Pane for TerminalPane {
         self.set_should_render(true);
         Some(output)
     }
+    fn last_command_output(&self) -> Option<String> {
+        self.grid.last_completed_command_output_raw()
+    }
     fn clear_command_output_flash(&mut self) {
         if self.grid.clear_command_output_flash() {
             self.set_should_render(true);

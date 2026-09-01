@@ -11,12 +11,12 @@ pub use super::generated_api::api::{
         break_panes_to_new_tab_response, break_panes_to_tab_with_id_response,
         break_panes_to_tab_with_index_response, delete_layout_response, dump_layout_response,
         dump_session_layout_response, edit_layout_response, focus_or_create_tab_response,
-        get_focused_pane_info_response, get_pane_cwd_response, get_pane_pid_response,
-        get_pane_running_command_response, get_session_list_response, hide_floating_panes_response,
-        highlight_style::Style as ProtobufHighlightStyleVariant, new_tab_response,
-        new_tab_unfocused_response, parse_layout_response, plugin_command::Payload,
-        rename_layout_response, save_layout_response, save_session_response,
-        show_floating_panes_response, BreakPanesToNewTabPayload,
+        get_focused_pane_info_response, get_last_command_output_response, get_pane_cwd_response,
+        get_pane_pid_response, get_pane_running_command_response, get_session_list_response,
+        hide_floating_panes_response, highlight_style::Style as ProtobufHighlightStyleVariant,
+        new_tab_response, new_tab_unfocused_response, parse_layout_response,
+        plugin_command::Payload, rename_layout_response, save_layout_response,
+        save_session_response, show_floating_panes_response, BreakPanesToNewTabPayload,
         BreakPanesToNewTabResponse as ProtobufBreakPanesToNewTabResponse,
         BreakPanesToTabWithIdPayload,
         BreakPanesToTabWithIdResponse as ProtobufBreakPanesToTabWithIdResponse,
@@ -44,7 +44,9 @@ pub use super::generated_api::api::{
         GenerateRandomNamePayload,
         GenerateRandomNameResponse as ProtobufGenerateRandomNameResponse,
         GenerateWebLoginTokenPayload, GetFocusedPaneInfoPayload,
-        GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse, GetLayoutDirPayload,
+        GetFocusedPaneInfoResponse as ProtobufGetFocusedPaneInfoResponse,
+        GetLastCommandOutputPayload as ProtobufGetLastCommandOutputPayload,
+        GetLastCommandOutputResponse as ProtobufGetLastCommandOutputResponse, GetLayoutDirPayload,
         GetLayoutDirResponse as ProtobufGetLayoutDirResponse,
         GetPaneCwdPayload as ProtobufGetPaneCwdPayload,
         GetPaneCwdResponse as ProtobufGetPaneCwdResponse, GetPaneInfoPayload,
@@ -141,8 +143,9 @@ use crate::data::{
     DeleteLayoutResponse, EditLayoutResponse, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
     GetPaneCwdResponse, GetPanePidResponse, GetPaneRunningCommandResponse, GetSessionListResponse,
     HighlightLayer, HighlightStyle, HttpVerb, InputMode, KeyWithModifier, KillSessionsResponse,
-    MessageToPlugin, NewPluginArgs, PaneId, PermissionType, PluginCommand, RegexHighlight,
-    RenameLayoutResponse, SaveLayoutResponse, SessionInfo, SessionListSnapshot,
+    LastCommandOutputResponse, MessageToPlugin, NewPluginArgs, PaneId, PermissionType,
+    PluginCommand, RegexHighlight, RenameLayoutResponse, SaveLayoutResponse, SessionInfo,
+    SessionListSnapshot,
 };
 use crate::input::actions::Action;
 use crate::input::layout::PercentOrFixed;
@@ -477,6 +480,35 @@ impl From<GetPaneCwdResponse> for ProtobufGetPaneCwdResponse {
             GetPaneCwdResponse::Err(err) => ProtobufGetPaneCwdResponse {
                 result: Some(get_pane_cwd_response::Result::Error(err)),
             },
+        }
+    }
+}
+
+impl From<LastCommandOutputResponse> for ProtobufGetLastCommandOutputResponse {
+    fn from(response: LastCommandOutputResponse) -> Self {
+        match response {
+            LastCommandOutputResponse::Ok(output) => ProtobufGetLastCommandOutputResponse {
+                result: Some(get_last_command_output_response::Result::Output(output)),
+            },
+            LastCommandOutputResponse::Err(err) => ProtobufGetLastCommandOutputResponse {
+                result: Some(get_last_command_output_response::Result::Error(err)),
+            },
+        }
+    }
+}
+
+impl From<ProtobufGetLastCommandOutputResponse> for LastCommandOutputResponse {
+    fn from(protobuf_response: ProtobufGetLastCommandOutputResponse) -> Self {
+        match protobuf_response.result {
+            Some(get_last_command_output_response::Result::Output(output)) => {
+                LastCommandOutputResponse::Ok(output)
+            },
+            Some(get_last_command_output_response::Result::Error(err)) => {
+                LastCommandOutputResponse::Err(err)
+            },
+            None => LastCommandOutputResponse::Err(String::from(
+                "Failed to convert GetLastCommandOutputResponse: missing result field",
+            )),
         }
     }
 }
@@ -1718,6 +1750,17 @@ impl TryFrom<ProtobufPluginCommand> for PluginCommand {
                         .try_into()?,
                 }),
                 _ => Err("Malformed GetPaneCwd payload"),
+            },
+            Some(CommandName::GetLastCommandOutput) => match protobuf_plugin_command.payload {
+                Some(Payload::GetLastCommandOutputPayload(payload)) => {
+                    Ok(PluginCommand::GetLastCommandOutput {
+                        pane_id: payload
+                            .pane_id
+                            .ok_or("Malformed GetLastCommandOutput: missing pane_id")?
+                            .try_into()?,
+                    })
+                },
+                _ => Err("Malformed GetLastCommandOutput payload"),
             },
             Some(CommandName::OverrideLayout) => match protobuf_plugin_command.payload {
                 Some(Payload::OverrideLayoutPayload(override_layout_payload)) => {
@@ -3590,6 +3633,14 @@ impl TryFrom<PluginCommand> for ProtobufPluginCommand {
                     pane_id: Some(pane_id.try_into()?),
                 })),
             }),
+            PluginCommand::GetLastCommandOutput { pane_id } => Ok(ProtobufPluginCommand {
+                name: CommandName::GetLastCommandOutput as i32,
+                payload: Some(Payload::GetLastCommandOutputPayload(
+                    ProtobufGetLastCommandOutputPayload {
+                        pane_id: Some(pane_id.try_into()?),
+                    },
+                )),
+            }),
             PluginCommand::OverrideLayout(
                 layout_info,
                 retain_existing_terminal_panes,
@@ -5280,6 +5331,35 @@ mod tests {
         match decoded {
             PluginCommand::ToggleFloatingPanes { tab_id } => assert_eq!(tab_id, Some(2)),
             other => panic!("expected ToggleFloatingPanes, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_last_command_output_protobuf_round_trip() {
+        let original = PluginCommand::GetLastCommandOutput {
+            pane_id: PaneId::Terminal(7),
+        };
+        let protobuf: ProtobufPluginCommand = original.try_into().expect("encode");
+        let decoded: PluginCommand = protobuf.try_into().expect("decode");
+        match decoded {
+            PluginCommand::GetLastCommandOutput {
+                pane_id: PaneId::Terminal(pane_id),
+            } => assert_eq!(pane_id, 7),
+            other => panic!("expected GetLastCommandOutput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn last_command_output_response_round_trip() {
+        for response in [
+            LastCommandOutputResponse::Ok(String::from("some output")),
+            // an empty string is a valid response (command completed with no output)
+            LastCommandOutputResponse::Ok(String::new()),
+            LastCommandOutputResponse::Err(String::from("pane not found")),
+        ] {
+            let protobuf: ProtobufGetLastCommandOutputResponse = response.clone().into();
+            let decoded: LastCommandOutputResponse = protobuf.into();
+            assert_eq!(decoded, response);
         }
     }
 }

@@ -25,12 +25,13 @@ use zellij_utils::data::{
     CommandType, ConnectToSession, DeleteAllDeadSessionsResponse, DeleteDeadSessionResponse,
     DeleteLayoutResponse, EditLayoutResponse, Event, FloatingPaneCoordinates,
     FocusOrCreateTabResponse, GetFocusedPaneInfoResponse, GetPaneCwdResponse, GetPanePidResponse,
-    GetPaneRunningCommandResponse, HttpVerb, KeyWithModifier, KillSessionsResponse, LayoutInfo,
-    LayoutMetadata, LayoutParsingError, MessageToPlugin, NewPanePlacement, NewTabResponse,
-    NewTabUnfocusedResponse, NewTiledPaneInTabResponse, OpenCommandPaneBackgroundResponse,
-    OpenCommandPaneFloatingNearPluginResponse, OpenCommandPaneFloatingResponse,
-    OpenCommandPaneInPlaceOfPaneIdResponse, OpenCommandPaneInPlaceOfPluginResponse,
-    OpenCommandPaneInPlaceResponse, OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
+    GetPaneRunningCommandResponse, HttpVerb, KeyWithModifier, KillSessionsResponse,
+    LastCommandOutputResponse, LayoutInfo, LayoutMetadata, LayoutParsingError, MessageToPlugin,
+    NewPanePlacement, NewTabResponse, NewTabUnfocusedResponse, NewTiledPaneInTabResponse,
+    OpenCommandPaneBackgroundResponse, OpenCommandPaneFloatingNearPluginResponse,
+    OpenCommandPaneFloatingResponse, OpenCommandPaneInPlaceOfPaneIdResponse,
+    OpenCommandPaneInPlaceOfPluginResponse, OpenCommandPaneInPlaceResponse,
+    OpenCommandPaneNearPluginResponse, OpenCommandPaneResponse,
     OpenEditPaneInPlaceOfPaneIdResponse, OpenFileFloatingNearPluginResponse,
     OpenFileFloatingResponse, OpenFileInPlaceOfPluginResponse, OpenFileInPlaceResponse,
     OpenFileNearPluginResponse, OpenFileResponse, OpenPaneInNewTabResponse,
@@ -82,13 +83,13 @@ use zellij_utils::{
             ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
             ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
             ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-            ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
-            ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
-            ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
-            ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse,
-            ProtobufKillSessionsResponse, ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse,
-            ProtobufNewTabsResponse, ProtobufNewTiledPaneInTabResponse,
-            ProtobufOpenCommandPaneBackgroundResponse,
+            ProtobufGetLastCommandOutputResponse, ProtobufGetLayoutDirResponse,
+            ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse,
+            ProtobufGetPaneRunningCommandResponse, ProtobufGetSessionEnvironmentVariablesResponse,
+            ProtobufGetSessionListResponse, ProtobufGetTabInfoResponse,
+            ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
+            ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
+            ProtobufNewTiledPaneInTabResponse, ProtobufOpenCommandPaneBackgroundResponse,
             ProtobufOpenCommandPaneFloatingNearPluginResponse,
             ProtobufOpenCommandPaneFloatingResponse,
             ProtobufOpenCommandPaneInPlaceOfPaneIdResponse,
@@ -518,6 +519,9 @@ fn host_run_plugin_command(mut caller: Caller<'_, PluginEnv>) {
                         get_pane_running_command(env, pane_id.into())
                     },
                     PluginCommand::GetPaneCwd { pane_id } => get_pane_cwd(env, pane_id.into()),
+                    PluginCommand::GetLastCommandOutput { pane_id } => {
+                        get_last_command_output(env, pane_id.into())
+                    },
                     PluginCommand::MovePaneWithPaneId(pane_id) => {
                         move_pane_with_pane_id(env, pane_id.into())
                     },
@@ -4476,6 +4480,64 @@ fn write_pane_cwd_response(env: &PluginEnv, pane_id: PaneId, response: GetPaneCw
         .non_fatal();
 }
 
+fn get_last_command_output(env: &PluginEnv, pane_id: PaneId) {
+    use crossbeam::channel::RecvTimeoutError;
+    use std::time::Duration;
+
+    let err_context = || {
+        format!(
+            "failed to get last command output for pane {:?} from plugin {}",
+            pane_id,
+            env.name()
+        )
+    };
+
+    // Create oneshot channel for response
+    let (response_sender, response_receiver) = crossbeam::channel::bounded(1);
+
+    // Send request to screen thread
+    env.senders
+        .send_to_screen(ScreenInstruction::GetLastCommandOutput {
+            pane_id,
+            response_channel: response_sender,
+        })
+        .with_context(err_context)
+        .non_fatal();
+
+    // Block waiting for response with 5 second timeout
+    let response = match response_receiver.recv_timeout(Duration::from_secs(5)) {
+        Ok(response) => response,
+        Err(RecvTimeoutError::Timeout) => {
+            log::error!(
+                "GetLastCommandOutput timed out after 5s for plugin {} requesting pane {:?}",
+                env.plugin_id,
+                pane_id
+            );
+            LastCommandOutputResponse::Err(format!(
+                "Timeout retrieving last command output for pane {:?}",
+                pane_id
+            ))
+        },
+        Err(RecvTimeoutError::Disconnected) => {
+            log::error!(
+                "GetLastCommandOutput channel disconnected for plugin {} requesting pane {:?}",
+                env.plugin_id,
+                pane_id
+            );
+            LastCommandOutputResponse::Err(format!(
+                "Channel disconnected while retrieving last command output for pane {:?}",
+                pane_id
+            ))
+        },
+    };
+
+    // Convert to protobuf and write back to plugin
+    let serialized = ProtobufGetLastCommandOutputResponse::from(response).encode_to_vec();
+    wasi_write_object(env, &serialized)
+        .with_context(err_context)
+        .non_fatal();
+}
+
 fn save_layout(env: &PluginEnv, layout_name: String, layout_kdl: String, overwrite: bool) {
     let err_context = || format!("Failed to save layout '{}'", layout_name);
 
@@ -5616,6 +5678,7 @@ fn check_command_permission(
             PermissionType::InterceptInput
         },
         PluginCommand::GetPaneScrollback { .. } => PermissionType::ReadPaneContents,
+        PluginCommand::GetLastCommandOutput { .. } => PermissionType::ReadPaneContents,
         PluginCommand::RunAction(..) => PermissionType::RunActionsAsUser,
         PluginCommand::GetSessionEnvironmentVariables => {
             PermissionType::ReadSessionEnvironmentVariables

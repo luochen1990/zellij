@@ -369,6 +369,16 @@ pub trait Pane {
     fn copy_last_command_output(&mut self) -> Option<String> {
         None
     }
+    /// The text of the last completed command's output in this pane, as delimited by OSC 133
+    /// command markers.
+    ///
+    /// Unlike [`Pane::copy_last_command_output`], this does not skip commands whose output is
+    /// empty: an empty [`String`] is returned for a completed command that produced no output,
+    /// so callers can tell it apart from a pane without any OSC 133 command markers (in which
+    /// case `None` is returned).
+    fn last_command_output(&self) -> Option<String> {
+        None
+    }
     fn clear_command_output_flash(&mut self) {}
     fn clear_scroll(&mut self);
     fn is_scrolled(&self) -> bool;

@@ -3536,6 +3536,47 @@ impl Grid {
         None
     }
 
+    /// The text of the last completed command's output, including commands whose output is empty.
+    ///
+    /// Unlike [`Grid::last_completed_command_output`], which keeps searching for an earlier
+    /// command whenever the most recent completed command produced no output (so that the
+    /// copy-command-output action has something to put on the clipboard), this returns the
+    /// output of the most recent completed command as-is: an empty `String` for a command
+    /// without output, and `None` only when no completed command (or no OSC 133 markers at
+    /// all) can be found.
+    pub fn last_completed_command_output_raw(&self) -> Option<String> {
+        if !self.osc133_markers_seen {
+            return None;
+        }
+        let first_line = -(self.lines_above.len() as isize);
+        let last_line = (self.viewport.len() + self.lines_below.len()) as isize - 1;
+        let mut command_boundary: Option<Position> = None;
+        for line in (first_line..=last_line).rev() {
+            let Some(row) = self.row_at(line) else {
+                continue;
+            };
+            for marker in row.osc133_markers.iter().rev() {
+                let marker_position = Self::osc133_marker_position(line, marker.column);
+                if marker.kind == Osc133MarkerKind::Output {
+                    if let Some(output_end) = command_boundary {
+                        // the most recent completed command: an output range that carries no
+                        // text (text_in_range -> None) is an empty output, not "no command"
+                        let output = self
+                            .text_in_range(marker_position, output_end)
+                            .unwrap_or_default();
+                        let output = output
+                            .strip_prefix('\n')
+                            .map(String::from)
+                            .unwrap_or(output);
+                        return Some(output);
+                    }
+                }
+                command_boundary = Some(marker_position);
+            }
+        }
+        None
+    }
+
     pub fn set_command_output_flash(&mut self, start: Position, end: Position) {
         let mut flash = Selection::default();
         flash.set_start_and_end_positions(start, end);

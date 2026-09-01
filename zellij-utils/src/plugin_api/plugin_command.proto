@@ -217,7 +217,8 @@ enum CommandName {
   ToggleFloatingPanes = 225;
   NewPane = 226;
   ToggleFocusNoUiFullscreen = 227;
-  FocusHostSession = 228;
+   FocusHostSession = 228;
+  GetLastCommandOutput = 229;
 }
 
 message PluginCommand {
@@ -378,6 +379,7 @@ message PluginCommand {
     NewTiledPaneInTabPayload new_tiled_pane_in_tab_payload = 169;
     SetPaneFrameStylePayload set_pane_frame_style_payload = 170;
     ToggleFloatingPanesPayload toggle_floating_panes_payload = 171;
+    GetLastCommandOutputPayload get_last_command_output_payload = 172;
   }
 }
 
@@ -937,6 +939,17 @@ message GetPaneCwdPayload {
 message GetPaneCwdResponse {
   oneof result {
     string cwd = 1;
+    string error = 2;
+  }
+}
+
+message GetLastCommandOutputPayload {
+  PaneId pane_id = 1;
+}
+
+message GetLastCommandOutputResponse {
+  oneof result {
+    string output = 1;
     string error = 2;
   }
 }

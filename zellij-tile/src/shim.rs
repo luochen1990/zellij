@@ -22,8 +22,8 @@ use zellij_utils::plugin_api::plugin_command::{
     ProtobufDeleteLayoutResponse, ProtobufDumpLayoutResponse, ProtobufDumpSessionLayoutResponse,
     ProtobufEditLayoutResponse, ProtobufFocusOrCreateTabResponse,
     ProtobufGenerateRandomNameResponse, ProtobufGetFocusedPaneInfoResponse,
-    ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse, ProtobufGetPaneInfoResponse,
-    ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
+    ProtobufGetLastCommandOutputResponse, ProtobufGetLayoutDirResponse, ProtobufGetPaneCwdResponse,
+    ProtobufGetPaneInfoResponse, ProtobufGetPanePidResponse, ProtobufGetPaneRunningCommandResponse,
     ProtobufGetSessionEnvironmentVariablesResponse, ProtobufGetSessionListResponse,
     ProtobufGetTabInfoResponse, ProtobufHideFloatingPanesResponse, ProtobufKillSessionsResponse,
     ProtobufNewTabResponse, ProtobufNewTabUnfocusedResponse, ProtobufNewTabsResponse,
@@ -1915,6 +1915,46 @@ pub fn get_pane_scrollback(
     match response {
         PaneScrollbackResponse::Ok(contents) => Ok(contents),
         PaneScrollbackResponse::Err(error_msg) => Err(error_msg),
+    }
+}
+
+/// Retrieves the output of the last completed command in the specified pane, as delimited by
+/// OSC 133 (semantic prompt) shell-integration markers emitted by the shell running in that
+/// pane.
+///
+/// This is the same information the built-in `copy last command output` action puts on the
+/// clipboard, but with one distinction useful for programmatic consumers: an empty `String`
+/// is returned when the most recent completed command produced no output, so "command
+/// completed silently" can be told apart from "no completed command output available".
+///
+/// # Arguments
+/// * `pane_id` - The ID of the pane to get the last command output from
+///
+/// # Returns
+/// * `Ok(String)` - The output of the last completed command (possibly empty)
+/// * `Err(String)` - An error message if the pane was not found, no completed command output
+///   could be found (e.g. the shell does not emit OSC 133 markers), or the request timed out
+pub fn get_last_command_output(pane_id: PaneId) -> Result<String, String> {
+    let plugin_command = PluginCommand::GetLastCommandOutput { pane_id };
+    let protobuf_plugin_command: ProtobufPluginCommand = plugin_command.try_into().unwrap();
+    object_to_stdout(&protobuf_plugin_command.encode_to_vec());
+    unsafe { host_run_plugin_command() };
+
+    // Read response from stdin
+    let response_bytes =
+        bytes_from_stdin().map_err(|e| format!("Failed to read response from stdin: {:?}", e))?;
+
+    // Decode protobuf response
+    let protobuf_response = ProtobufGetLastCommandOutputResponse::decode(response_bytes.as_slice())
+        .map_err(|e| format!("Failed to decode protobuf response: {}", e))?;
+
+    // Convert to Rust type
+    let response = LastCommandOutputResponse::from(protobuf_response);
+
+    // Convert Result enum to actual Result type
+    match response {
+        LastCommandOutputResponse::Ok(output) => Ok(output),
+        LastCommandOutputResponse::Err(error_msg) => Err(error_msg),
     }
 }
 

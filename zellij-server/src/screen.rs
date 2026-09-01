@@ -41,10 +41,10 @@ use crate::route::NotificationEnd;
 use log::{debug, warn};
 use zellij_utils::data::{
     CommandOrPlugin, Direction, EventType, FloatingPaneCoordinates, GetFocusedPaneInfoResponse,
-    HostTerminalThemeMode, KeyWithModifier, LayoutInfo, LayoutWithError, ListPanesResponse,
-    ListTabsResponse, NewPanePlacement, PaneContents, PaneInfo, PaneListEntry, PaneManifest,
-    PaneRenderReport, PaneScrollbackResponse, PluginPermission, RegexHighlight, Resize,
-    ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WebSharing,
+    HostTerminalThemeMode, KeyWithModifier, LastCommandOutputResponse, LayoutInfo, LayoutWithError,
+    ListPanesResponse, ListTabsResponse, NewPanePlacement, PaneContents, PaneInfo, PaneListEntry,
+    PaneManifest, PaneRenderReport, PaneScrollbackResponse, PluginPermission, RegexHighlight,
+    Resize, ResizeStrategy, SessionInfo, Styling, TabInfo, ThemeHue, WebSharing,
 };
 use zellij_utils::errors::prelude::*;
 use zellij_utils::input::actions::Action;
@@ -429,6 +429,10 @@ pub enum ScreenInstruction {
         client_id: ClientId,
         get_full_scrollback: bool,
         response_channel: crossbeam::channel::Sender<PaneScrollbackResponse>,
+    },
+    GetLastCommandOutput {
+        pane_id: PaneId,
+        response_channel: crossbeam::channel::Sender<LastCommandOutputResponse>,
     },
     ScrollUp(ClientId, Option<NotificationEnd>),
     ScrollUpAt(Position, ClientId, Option<NotificationEnd>),
@@ -1023,6 +1027,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::GetTabInfo { .. } => ScreenContext::GetTabInfo,
             ScreenInstruction::EditScrollback(..) => ScreenContext::EditScrollback,
             ScreenInstruction::GetPaneScrollback { .. } => ScreenContext::GetPaneScrollback,
+            ScreenInstruction::GetLastCommandOutput { .. } => ScreenContext::GetLastCommandOutput,
             ScreenInstruction::ScrollUp(..) => ScreenContext::ScrollUp,
             ScreenInstruction::ScrollDown(..) => ScreenContext::ScrollDown,
             ScreenInstruction::ScrollToBottom(..) => ScreenContext::ScrollToBottom,
@@ -9071,6 +9076,41 @@ pub(crate) fn screen_thread_main(
                     // the plugin likely timed out and dropped the receiver
                     log::debug!(
                         "Plugin timed out before pane scrollback response was sent for pane {:?}",
+                        pane_id
+                    );
+                }
+            },
+            ScreenInstruction::GetLastCommandOutput {
+                pane_id,
+                response_channel,
+            } => {
+                let mut pane_output: Option<String> = None;
+                let mut pane_found = false;
+                for tab in screen.get_tabs_mut().values() {
+                    if let Some(pane) = tab.get_pane_with_id(pane_id) {
+                        pane_found = true;
+                        pane_output = pane.last_command_output();
+                        break;
+                    }
+                }
+                // Send response back through channel
+                let response = match (pane_found, pane_output) {
+                    (_, Some(output)) => LastCommandOutputResponse::Ok(output),
+                    (false, None) => {
+                        log::warn!(
+                            "Plugin requested last command output for pane {:?} but pane was not found",
+                            pane_id
+                        );
+                        LastCommandOutputResponse::Err(format!("Pane {:?} not found", pane_id))
+                    },
+                    (true, None) => LastCommandOutputResponse::Err(String::from(
+                        "No completed command output found",
+                    )),
+                };
+                if let Err(_) = response_channel.send(response) {
+                    // the plugin likely timed out and dropped the receiver
+                    log::debug!(
+                        "Plugin timed out before last command output response was sent for pane {:?}",
                         pane_id
                     );
                 }
