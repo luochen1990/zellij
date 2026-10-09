@@ -195,6 +195,31 @@ fn get_lines_above_bottom_canonical_row_and_wraps(rows: &mut VecDeque<Row>) -> V
     }
 }
 
+/// lines_above 底部逻辑行 (canonical 行 + 其 wraps) 的当前显示宽度。
+/// 只读探测 (不 drain), 供合并前的宽度上限判定; 走 width_cached 使已合并行的
+/// 探测为 O(1)。
+fn lines_above_bottom_logical_row_width(rows: &mut VecDeque<Row>) -> usize {
+    let mut width = 0;
+    for row in rows.iter_mut().rev() {
+        width += row.width_cached();
+        if row.is_canonical {
+            break;
+        }
+    }
+    width
+}
+
+/// 单条逻辑行在 lines_above 中允许的最大显示宽度。
+///
+/// 超过后, 新到的非 canonical wrap 行不再并入底部逻辑行, 而是标记为 canonical
+/// 自成新逻辑行 — 内容无损, 仅滚动回看时多一个视觉换行边界。
+///
+/// 防御 "无换行、\r 持续重写超过一行的输出" (rsync --info=progress2 型) 把同一
+/// 逻辑行撑到无界宽度: 该形态下每次 wrap-滚动都要走 O(行宽) 的合并路径
+/// (Row::append/width), 行宽随累计重写数线性增长 → 每次重写成本线性增长 →
+/// O(n²) 总量, 最终 screen 线程饱和、停止排空 pty, pane 内进程 write 阻塞冻结。
+const MAX_MERGED_SCROLLBACK_LINE_WIDTH: usize = 10_000;
+
 fn get_viewport_bottom_canonical_row_and_wraps(viewport: &mut VecDeque<Row>) -> Vec<Row> {
     let mut index_of_last_non_canonical_row = None;
     for (i, row) in viewport.iter().enumerate().rev() {
@@ -306,18 +331,25 @@ fn transfer_rows_from_viewport_to_lines_above(
 ) -> isize {
     let mut transferred_rows_count: isize = 0;
     let drained_lines = std::cmp::min(count, viewport.len());
-    for next_line in viewport.drain(..drained_lines) {
+    for mut next_line in viewport.drain(..drained_lines) {
         let mut next_lines: Vec<Row> = vec![];
         transferred_rows_count +=
             calculate_row_display_height(next_line.width(), max_viewport_width) as isize;
         if !next_line.is_canonical {
-            let mut bottom_canonical_row_and_wraps_in_dst =
-                get_lines_above_bottom_canonical_row_and_wraps(lines_above);
-            kitty_grid.merge_rows_into_line_start(
-                lines_above.len(),
-                bottom_canonical_row_and_wraps_in_dst.len(),
-            );
-            next_lines.append(&mut bottom_canonical_row_and_wraps_in_dst);
+            // 宽度上限判定 (issue #1571): 底部逻辑行已达上限时不再并入, 新开逻辑行,
+            // 阻断 "无换行 \r 重写流" 对单逻辑行宽度的无界累积
+            if lines_above_bottom_logical_row_width(lines_above) >= MAX_MERGED_SCROLLBACK_LINE_WIDTH
+            {
+                next_line.is_canonical = true;
+            } else {
+                let mut bottom_canonical_row_and_wraps_in_dst =
+                    get_lines_above_bottom_canonical_row_and_wraps(lines_above);
+                kitty_grid.merge_rows_into_line_start(
+                    lines_above.len(),
+                    bottom_canonical_row_and_wraps_in_dst.len(),
+                );
+                next_lines.append(&mut bottom_canonical_row_and_wraps_in_dst);
+            }
         }
         next_lines.push(next_line);
         let dropped_line_width = bounded_push(
@@ -383,7 +415,7 @@ fn bounded_push(
     let mut dropped_line_width = None;
     if vec.len() >= *SCROLL_BUFFER_SIZE.get().unwrap() {
         let line = vec.pop_front();
-        if let Some(line) = line {
+        if let Some(mut line) = line {
             sixel_grid.offset_grid_top();
             kitty_grid.offset_grid_top();
             if line.is_canonical {
@@ -397,7 +429,8 @@ fn bounded_push(
                     };
                 kitty_grid.drop_first_canonical_anchor_line(first_canonical_row);
             }
-            dropped_line_width = Some(line.width());
+            // width_cached: 被逐出行可能已达合并宽度上限, 用缓存避免逐列重扫
+            dropped_line_width = Some(line.width_cached());
         }
     }
     vec.push_back(value);
@@ -5932,14 +5965,18 @@ impl Row {
         self.width = None;
     }
     pub fn append(&mut self, to_append: &mut Row) {
-        let column_offset = self.width();
+        // 增量维护宽度缓存 (issue #1571): 被并入行宽度有界 (≤ 视口宽 + 少量 wrap),
+        // 本行宽度取缓存, 合并成本 O(tail) 而非 O(整行); 追加后缓存保持温暖,
+        // 使 "无换行 \r 重写流" 下反复合并同一逻辑行不再每次全量重扫列。
+        let column_offset = self.width_cached();
+        let appended_width = to_append.width();
         self.columns.append(&mut to_append.columns);
         self.osc133_markers
             .extend(to_append.osc133_markers.drain(..).map(|mut marker| {
                 marker.column += column_offset;
                 marker
             }));
-        self.width = None;
+        self.width = Some(column_offset + appended_width);
     }
     pub fn drain_until(&mut self, x: usize) -> VecDeque<TerminalCharacter> {
         let mut drained_part_len = 0;

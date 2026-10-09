@@ -18,6 +18,7 @@ use zellij_utils::{
 };
 
 use std::fmt::Write;
+use std::time::Instant;
 
 fn read_fixture(fixture_name: &str) -> Vec<u8> {
     let mut path_to_file = std::path::PathBuf::new();
@@ -9238,5 +9239,87 @@ fn last_completed_command_output_raw_degenerate_range_is_empty_output() {
     assert_eq!(
         grid.last_completed_command_output().map(|(o, _, _)| o),
         Some("AA-line".to_owned())
+    );
+}
+
+// ---- issue #1571: \r-重写流 (rsync progress2) 病态复现与回归 ----
+// 形态: 长时间无换行、\r 持续重写同一行 → 每批处理成本随累计流增长 (用户态自旋)。
+// 性质: 每批 (固定字节量) 的处理耗时应与已处理的累计批数无关 (bounded, 非累计)。
+
+fn spin_grid_with_width(columns: usize) -> Grid {
+    Grid::new(
+        50,
+        columns,
+        Rc::new(RefCell::new(Palette::default())),
+        Rc::new(RefCell::new(HashMap::new())),
+        Rc::new(RefCell::new(LinkHandler::new())),
+        Rc::new(RefCell::new(None)),
+        Rc::new(RefCell::new(SixelImageStore::default())),
+        Rc::new(RefCell::new(KittyImageStore::default())),
+        Style::default(),
+        false,
+        true,
+        true,
+        true,
+        false,
+    )
+}
+
+#[test]
+fn carriage_return_rewrite_stream_cost_stays_bounded() {
+    let mut vte_parser = vte::Parser::new();
+    let mut grid = spin_grid_with_width(55); // 进度行 ~80 字符 → 每次重写 wrap → scroll
+    let one_rewrite =
+        "\r     1,234,567,890  100%  45.67MB/s    0:12:47  xfr:1234, ir-chk:5678/91011";
+    let mut chunk = String::with_capacity(4096);
+    while chunk.len() < 4096 {
+        chunk.push_str(one_rewrite);
+    }
+    let chunk_bytes = chunk.as_bytes();
+
+    let batches: usize = std::env::var("SPIN_BATCHES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
+    let inner: usize = std::env::var("SPIN_INNER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100);
+    let mut first: Option<u128> = None;
+    let mut last: u128 = 0;
+    for i in 0..batches {
+        let t0 = Instant::now();
+        for _ in 0..inner {
+            vte_parser.advance(&mut grid, chunk_bytes);
+            let _ = grid.render(0, 0, &Style::default());
+        }
+        let us = t0.elapsed().as_micros();
+        if i < 3 {
+            first = Some(first.map_or(us, |f: u128| f.min(us)));
+        }
+        if i >= batches - 3 {
+            last = std::cmp::max(last, us);
+        }
+        if std::env::var("SPIN_REPRO_VERBOSE").is_ok() {
+            println!(
+                "batch {:>4}: {:>10} µs  (lines_above={}, viewport={})",
+                i,
+                us,
+                grid.lines_above.len(),
+                grid.viewport.len()
+            );
+        }
+    }
+    let first = first.unwrap();
+    println!(
+        "first batches min: {} µs, last batches max: {} µs",
+        first, last
+    );
+    // 回归断言: 末段批成本不得显著高于首段 (容忍 5× 抖动余量; 病态形态下实测 >50×)
+    assert!(
+        last < first.saturating_mul(5),
+        "per-batch cost grew with cumulative stream volume: first={}µs last={}µs",
+        first,
+        last
     );
 }
