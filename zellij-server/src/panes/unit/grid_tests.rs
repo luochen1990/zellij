@@ -9265,6 +9265,13 @@ fn spin_grid_with_width(columns: usize) -> Grid {
     )
 }
 
+fn spin_env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
 #[test]
 fn carriage_return_rewrite_stream_cost_stays_bounded() {
     let mut vte_parser = vte::Parser::new();
@@ -9277,14 +9284,9 @@ fn carriage_return_rewrite_stream_cost_stays_bounded() {
     }
     let chunk_bytes = chunk.as_bytes();
 
-    let batches: usize = std::env::var("SPIN_BATCHES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(40);
-    let inner: usize = std::env::var("SPIN_INNER")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100);
+    let batches = spin_env_usize("SPIN_BATCHES", 40);
+    let inner = spin_env_usize("SPIN_INNER", 100);
+    let verbose = std::env::var("SPIN_REPRO_VERBOSE").is_ok();
     let mut first: Option<u128> = None;
     let mut last: u128 = 0;
     for i in 0..batches {
@@ -9297,10 +9299,11 @@ fn carriage_return_rewrite_stream_cost_stays_bounded() {
         if i < 3 {
             first = Some(first.map_or(us, |f: u128| f.min(us)));
         }
-        if i >= batches - 3 {
+        // i + 3 形态避免 SPIN_BATCHES < 3 时 usize 下溢
+        if i + 3 >= batches {
             last = std::cmp::max(last, us);
         }
-        if std::env::var("SPIN_REPRO_VERBOSE").is_ok() {
+        if verbose {
             println!(
                 "batch {:>4}: {:>10} µs  (lines_above={}, viewport={})",
                 i,

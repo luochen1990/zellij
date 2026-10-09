@@ -198,6 +198,11 @@ fn get_lines_above_bottom_canonical_row_and_wraps(rows: &mut VecDeque<Row>) -> V
 /// lines_above 底部逻辑行 (canonical 行 + 其 wraps) 的当前显示宽度。
 /// 只读探测 (不 drain), 供合并前的宽度上限判定; 走 width_cached 使已合并行的
 /// 探测为 O(1)。
+///
+/// 结构不变量: lines_above 中每行即一个完整逻辑行 (Row::from_rows 合并的产物),
+/// 循环几乎总在首行命中 canonical 退出; 写成多行累加是为与
+/// get_lines_above_bottom_canonical_row_and_wraps 的 drain 边界逐字对齐 —
+/// 该对齐保证上限切割的锚点判定与后续合并的取行判定是同一逻辑行定义。
 fn lines_above_bottom_logical_row_width(rows: &mut VecDeque<Row>) -> usize {
     let mut width = 0;
     for row in rows.iter_mut().rev() {
@@ -336,8 +341,7 @@ fn transfer_rows_from_viewport_to_lines_above(
         transferred_rows_count +=
             calculate_row_display_height(next_line.width(), max_viewport_width) as isize;
         if !next_line.is_canonical {
-            // 宽度上限判定 (issue #1571): 底部逻辑行已达上限时不再并入, 新开逻辑行,
-            // 阻断 "无换行 \r 重写流" 对单逻辑行宽度的无界累积
+            // 底部逻辑行已达合并宽度上限 (issue #1571): 新开逻辑行阻断无界累积
             if lines_above_bottom_logical_row_width(lines_above) >= MAX_MERGED_SCROLLBACK_LINE_WIDTH
             {
                 next_line.is_canonical = true;
