@@ -12887,6 +12887,58 @@ fn an_osc_9_notification_is_translated_for_an_osc_99_host() {
 }
 
 #[test]
+fn an_osc_99_control_frame_without_content_is_not_forwarded() {
+    // 回归: opentui (opencode TUI) 启动时的能力探测串
+    // `ESC ] 99 ; i=opentui-notifications:p=?; ESC \` 是纯 metadata 控制帧 (无通知内容),
+    // 曾被转发为空 OSC 9 (`ESC ] 9 ; BEL`), wezterm 将其渲染为无标题桌面通知。
+    // 两种 payload 形态 (vte 参数 join 后有无尾分号) 都不得产生任何转发输出。
+    for payload in [
+        "i=opentui-notifications:p=?;",
+        "i=opentui-notifications:p=?",
+    ] {
+        let (mut screen, server_receiver) =
+            screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, BTreeMap::new());
+
+        screen.forward_desktop_notifications(
+            vec![PendingNotification::Osc99 {
+                payload: payload.to_owned(),
+                terminator: "\u{7}".to_owned(),
+            }],
+            1,
+        );
+
+        let output = collect_forwarded_notifications(&server_receiver);
+        assert!(
+            output.is_empty(),
+            "an OSC 99 control frame must not be forwarded to the host, got: {:?}",
+            output
+        );
+    }
+}
+
+#[test]
+fn a_contentless_notification_is_not_forwarded_for_bell_hosts_either() {
+    // render 层守卫对全部协议一致生效: 空内容通知在 Bell 协议下同样不产生裸铃声。
+    let (mut screen, server_receiver) =
+        screen_with_a_client_for_notifications(HostNotificationProtocol::Bell, BTreeMap::new());
+
+    screen.forward_desktop_notifications(
+        vec![PendingNotification::Osc99 {
+            payload: "i=1:d=0;".to_owned(),
+            terminator: "\u{7}".to_owned(),
+        }],
+        1,
+    );
+
+    let output = collect_forwarded_notifications(&server_receiver);
+    assert!(
+        output.is_empty(),
+        "a contentless notification must be dropped before protocol rendering, got: {:?}",
+        output
+    );
+}
+
+#[test]
 fn an_osc_99_notification_reaching_an_osc_9_host_is_translated_down() {
     let (mut screen, server_receiver) =
         screen_with_a_client_for_notifications(HostNotificationProtocol::Auto, BTreeMap::new());

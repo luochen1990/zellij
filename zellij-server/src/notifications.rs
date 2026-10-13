@@ -42,6 +42,12 @@ impl NotificationProtocol {
         }
     }
     pub fn render(&self, title: &str, body: &str) -> Option<String> {
+        // 空内容守卫: title 与 body 均为空时这不是一条通知 (典型形态: OSC 99 能力
+        // 探测/控制帧, metadata 非空但无内容), 转发渲染只会产出空 OSC 9 / 裸铃声,
+        // 在 wezterm 等终端上表现为无标题桌面通知 — 直接丢弃。
+        if title.is_empty() && body.is_empty() {
+            return None;
+        }
         let payload = if title.is_empty() {
             body.to_owned()
         } else if body.is_empty() {
