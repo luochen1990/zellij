@@ -345,14 +345,25 @@ impl ClientOsApi for ClientOsInputOutput {
     }
     fn connect_to_server(&self, path: &Path) {
         let socket;
+        // retry for a bounded time: if the server socket never appears (e.g. the
+        // server exited and removed it), retrying forever would hang this client
+        let deadline = time::Instant::now() + time::Duration::from_secs(10);
         loop {
             match zellij_utils::consts::ipc_connect(path) {
                 Ok(sock) => {
                     socket = sock;
                     break;
                 },
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                Err(e) => {
+                    if time::Instant::now() > deadline {
+                        eprintln!(
+                            "Failed to connect to the zellij server socket at {:?} \
+                             within 10 seconds: {}. Is the server still running?",
+                            path, e
+                        );
+                        std::process::exit(1);
+                    }
+                    thread::sleep(time::Duration::from_millis(50));
                 },
             }
         }

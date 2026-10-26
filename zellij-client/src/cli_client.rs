@@ -778,6 +778,12 @@ fn individual_messages_client(
                     return None;
                 },
             },
+            // connection closed (EOF) or failed to decode a message: keep looping
+            // would just busy-spin on a dead socket, so exit with an error
+            None => {
+                eprintln!("Connection to the zellij server closed while waiting for a response");
+                return Some(2);
+            },
             _ => {},
         }
     }

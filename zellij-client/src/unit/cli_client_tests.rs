@@ -206,6 +206,24 @@ fn a_log_error_from_the_server_exits_two() {
     assert_eq!(run(&os_api, pipe_action(None)), 2);
 }
 
+#[test]
+fn a_lost_connection_exits_two_for_individual_actions() {
+    // no replies are ever sent: recv_from_server hits its deadline and returns
+    // None, which the action client must treat as a lost connection instead of
+    // looping on it
+    let os_api = ScriptedOsApi::new(None, vec![]);
+    assert_eq!(
+        run(
+            &os_api,
+            Action::RenameTab {
+                tab_index: 0,
+                name: b"renamed".to_vec(),
+            },
+        ),
+        2
+    );
+}
+
 fn prompt_cli(args: &[&str]) -> PromptCli {
     let mut command_line = vec!["prompt"];
     command_line.extend_from_slice(args);
